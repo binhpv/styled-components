@@ -1,8 +1,8 @@
 import isPropValid from '@emotion/is-prop-valid';
 import React, { createElement, PropsWithoutRef, Ref } from 'react';
 import { IS_RSC, SC_ATTR, SC_VERSION, SPLITTER } from '../constants';
-import { getGroupForId } from '../sheet/GroupIDAllocator';
 import type StyleSheet from '../sheet';
+import { getGroupForId } from '../sheet/GroupIDAllocator';
 import type {
   AnyComponent,
   Attrs,
@@ -246,13 +246,16 @@ function useStyledComponentImpl<Props extends BaseObject>(
 
   let context: React.HTMLAttributes<Element> & ExecutionContext & Props;
   let generatedClassName: string;
+  let cacheHit = false;
 
   // Client-only render cache: skip resolveContext and generateAndInjectStyles
   // when props+theme haven't changed. propsForElement is always rebuilt since
   // it's mutated with className/ref after construction.
   // __SERVER__ and IS_RSC are build/module-level constants for dead-code elimination.
-  if (!__SERVER__ && !IS_RSC) {
-    const renderCacheRef = React.useRef<RenderCache | null>(null);
+  // useRef is called unconditionally to preserve hook ordering.
+  const renderCacheRef = !__SERVER__ && !IS_RSC ? React.useRef<RenderCache | null>(null) : null;
+
+  if (renderCacheRef) {
     const prev = renderCacheRef.current;
 
     if (
@@ -265,10 +268,22 @@ function useStyledComponentImpl<Props extends BaseObject>(
     ) {
       context = prev[5] as typeof context;
       generatedClassName = prev[6];
+      cacheHit = true;
     } else {
       context = resolveContext<Props>(componentAttrs, props, theme);
-      generatedClassName = useInjectedStyle(componentStyle, context, ssc.styleSheet, ssc.stylis);
+    }
+  } else {
+    context = resolveContext<Props>(componentAttrs, props, theme);
+  }
 
+  // Always call useInjectedStyle unconditionally to preserve hook ordering
+  // (it may call React.useDebugValue in dev mode).
+  // On cache hit the result is discarded in favor of the cached className.
+  const injectedClassName = useInjectedStyle(componentStyle, context!, ssc.styleSheet, ssc.stylis);
+  if (!cacheHit) {
+    generatedClassName = injectedClassName;
+    // Update the render cache with the new values.
+    if (renderCacheRef) {
       let propsKeyCount = 0;
       for (const key in props) {
         if (hasOwn.call(props, key)) propsKeyCount++;
@@ -284,9 +299,6 @@ function useStyledComponentImpl<Props extends BaseObject>(
         componentStyle,
       ];
     }
-  } else {
-    context = resolveContext<Props>(componentAttrs, props, theme);
-    generatedClassName = useInjectedStyle(componentStyle, context, ssc.styleSheet, ssc.stylis);
   }
 
   if (process.env.NODE_ENV !== 'production' && forwardedComponent.warnTooManyClasses) {
